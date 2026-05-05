@@ -40,6 +40,18 @@ struct IPV6Header {
     std::array<uint8_t, 16> dest_ip;
 };
 
+struct ARPHeader {
+    uint16_t hw_type;        // Hardware type (1 for Ethernet)
+    uint16_t proto_type;     // Protocol type (0x0800 for IPv4)
+    uint8_t  hw_addr_len;    // 6 for MAC
+    uint8_t  proto_addr_len; // 4 for IP
+    uint16_t opcode;         // 1 for Request, 2 for Reply
+    std::array<uint8_t, 6> sender_mac;
+    uint32_t sender_ip;
+    std::array<uint8_t, 6> target_mac;
+    uint32_t target_ip;
+};
+
 #pragma pack(pop)
 
 // --- Helper Functions ---
@@ -141,8 +153,45 @@ int main(){
                     std::cout<<" | Next Header: "<< std::dec << (int)ip6.next_header << "\n";
                 }
             }
-            else if(eth.ether_type == 0x0806){
-                std::cout<<" [ARP] Request/Reply detection\n";
+            else if(eth.ether_type == 0x0806){  //ARP Request/Reply
+
+                std::span<const uint8_t>arp_payload = packet.subspan(sizeof(EthernetHeader));
+                if(arp_payload.size() >= sizeof(ARPHeader)){
+                    ARPHeader arp;
+                    std::memcpy(&arp,arp_payload.data(),sizeof(ARPHeader));
+
+                    uint16_t opcode = __builtin_bswap16(arp.opcode);
+                    uint32_t my_ip = 0x050aa8c0;    //192.168.10.5 in little endian
+
+                    if(opcode == 1 && arp.target_ip == my_ip){
+                        std::cout<<" [ARP] Request from my IP! Sending reply... \n";
+
+                        //1. build reply packet 
+                        uint8_t replybuffer[sizeof(EthernetHeader)+sizeof(ARPHeader)];
+
+                        //2. configure ethernet header
+                        EthernetHeader* eth_res = reinterpret_cast<EthernetHeader*>(replybuffer);
+                        eth_res->dest_mac = eth.src_mac;
+                        eth_res->src_mac = {0x00,0x11,0x22,0x33,0x44,0x55};
+                        eth_res->ether_type = __builtin_bswap16(0x0806);
+
+                        //3. configure arp header
+                        ARPHeader* arp_res = reinterpret_cast<ARPHeader*>(replybuffer + sizeof(EthernetHeader));
+                        arp_res->hw_type = arp.hw_type;
+                        arp_res->proto_type = arp.proto_type;
+                        arp_res->hw_addr_len = 6;
+                        arp_res->proto_addr_len = 4;
+                        arp_res->opcode = __builtin_bswap16(2); //2 = reply
+
+                        arp_res->sender_mac = {0x00,0x11,0x22,0x33,0x44,0x55};
+                        arp_res->sender_ip = my_ip;
+                        arp_res->target_mac = arp.sender_mac;
+                        arp_res->target_ip = arp.sender_ip;
+
+                        //4. write back to tap device
+                        write(tap_fd,replybuffer,sizeof(replybuffer));
+                    }
+                }
             }
             std::cout << "------------------------------------------\n\n";
         }
