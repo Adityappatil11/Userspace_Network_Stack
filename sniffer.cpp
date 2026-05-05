@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <array>
 #include <span>
+#include <vector>
 
 
 #pragma pack(push, 1)
@@ -52,7 +53,29 @@ struct ARPHeader {
     uint32_t target_ip;
 };
 
+struct ICMPHeader{
+    uint8_t type;   // 8 for echo request, 0 for echo reply
+    uint8_t code;   //0
+    uint16_t checksum;
+    uint16_t id;
+    uint16_t sequence;
+};
+
 #pragma pack(pop)
+
+// --- Checksum Function ---
+
+uint16_t calculate_checksum(void* b,int len){
+    uint32_t sum = 0;
+    uint16_t* ptr = static_cast<uint16_t*>(b);
+    while(len>1){
+        sum += *ptr++;
+        len -= 2;
+    }
+    if(len > 0) sum += *reinterpret_cast<uint8_t*>(ptr);
+    while(sum>>16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return ~static_cast<uint16_t>(sum);
+}
 
 // --- Helper Functions ---
 
@@ -140,6 +163,42 @@ int main(){
 
                     std::cout<<" [IPv4] ";print_ipv4(ip4.src_ip);std::cout<<" -> ";print_ipv4(ip4.dest_ip);
                     std::cout << " | proto: "<<std::dec<<(int)ip4.protocol<<"\n";
+
+                    // ICMP echo reply
+                    if(ip4.protocol == 1){  // ICMP
+                        std::span<const uint8_t> icmp_payload = payload.subspan(sizeof(IPV4Header));
+
+                        if(icmp_payload.size() >= sizeof(ICMPHeader)){
+                            ICMPHeader icmp;
+                            std::memcpy(&icmp,icmp_payload.data(),sizeof(ICMPHeader));
+
+                            if(icmp.type == 8){ // echo request
+                                std::cout<< " [ICMP] Echo request! replying... \n";
+                                
+                                //creating a copy of response
+                                std::vector<uint8_t> reply(buffer,buffer+bytes_read);
+
+                                //1.swap MAC
+                                EthernetHeader* eth_res = reinterpret_cast<EthernetHeader*>(reply.data());
+                                std::swap(eth_res->src_mac,eth_res->dest_mac);
+
+                                //2.swap IPs
+                                IPV4Header* ip_res = reinterpret_cast<IPV4Header*>(reply.data() + sizeof(EthernetHeader));
+                                std::swap(ip_res->src_ip,ip_res->dest_ip);
+
+                                //3.build ICMP reply
+                                ICMPHeader* icmp_res = reinterpret_cast<ICMPHeader*>(reply.data() + sizeof(EthernetHeader) + sizeof(IPV4Header));
+                                icmp_res->type = 0;     //echo reply
+                                icmp_res->checksum = 0; //clear before calculation
+
+                                //recalculating the checksum
+                                int icmp_len = bytes_read - sizeof(EthernetHeader) - sizeof(IPV4Header);
+                                icmp_res->checksum = calculate_checksum(icmp_res,icmp_len);
+
+                                write(tap_fd,reply.data(),reply.size());
+                            }
+                        }
+                    }
                 }
             }
             else if(eth.ether_type == 0x86dd){  //IPv6 Protocol
