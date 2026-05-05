@@ -17,6 +17,20 @@ struct EthernetHeader {
     std::array<uint8_t, 6> src_mac;
     uint16_t ether_type;
 };
+
+struct IPV4Header {
+    uint8_t  version_ihl;      // Version (4 bits) + Header Length (4 bits)
+    uint8_t  tos;              // Type of Service
+    uint16_t total_length;     // Entire packet length
+    uint16_t identification;
+    uint16_t flags_fo;         // Flags + Fragment Offset
+    uint8_t  ttl;              // Time to Live
+    uint8_t  protocol;         // ICMP=1, TCP=6, UDP=17
+    uint16_t checksum;
+    uint32_t src_ip;           // Source IP (Big Endian)
+    uint32_t dest_ip;          // Dest IP (Big Endian)
+};
+
 #pragma pack(pop)
 
 int open_tap_device(const char* dev_name){
@@ -48,6 +62,12 @@ void print_mac(const std::array<uint8_t,6>& mac){
     }
 }
 
+void print_ip(uint32_t ip){
+    uint8_t bytes[4];
+    std::memcpy(bytes,&ip,4);
+    std::cout<<std::dec<<(int)bytes[0]<<"."<<(int)bytes[1]<<"."<<(int)bytes[2]<<"."<<(int)bytes[3];
+}
+
 int main(){
     const char* dev_name = "tap0";
     int tap_fd = open_tap_device(dev_name);
@@ -64,25 +84,34 @@ int main(){
         }
 
         std::span<const uint8_t> packet(buffer,bytes_read);
+
+        // 1. Layer 2: Ethernet
         if(packet.size()>=sizeof(EthernetHeader)){
             EthernetHeader eth;
             std::memcpy(&eth,packet.data(),sizeof(EthernetHeader));
             eth.ether_type = __builtin_bswap16(eth.ether_type);
+
             std::cout << "------------------------------------------\n";
             std::cout << "Parsed Ethernet Frame (" << bytes_read << " bytes):\n";
             std::cout << "  Src MAC:    "; print_mac(eth.src_mac); std::cout << "\n";
             std::cout << "  Dest MAC:   "; print_mac(eth.dest_mac); std::cout << "\n";
             std::cout << "  EtherType:  0x" << std::hex << eth.ether_type << std::dec << "\n";
 
+            // 2. Layer 3: IPv4
             // Identify the payload
-            if (eth.ether_type == 0x0806) {
-                std::cout << "  Protocol:   ARP\n";
-            } else if (eth.ether_type == 0x0800) {
-                std::cout << "  Protocol:   IPv4\n";
-            } else if (eth.ether_type == 0x86dd) {
-                std::cout << "  Protocol:   IPv6\n";
-            } else {
-                std::cout << "  Protocol:   Unknown\n";
+            if (eth.ether_type == 0x08000) {    //IPv4 Protocol
+                std::span<const uint8_t> ip_payload = packet.subspan(sizeof(EthernetHeader));
+
+                if(ip_payload.size() >= sizeof(IPV4Header)){
+                    IPV4Header ip;
+                    std::memcpy(&ip,ip_payload.data(),sizeof(IPV4Header));
+
+                    std::cout<<" [IPv4] ";print_ip(ip.src_ip);std::cout<<" -> ";print_ip(ip.dest_ip);
+                    std::cout << " | proto: "<<std::dec<<(int)ip.protocol<<"\n";
+                }
+            }
+            else if(eth.ether_type==0x0806){
+                std::cout<<" [ARP] Request/Reply detection\n";
             }
             std::cout << "------------------------------------------\n\n";
         }
